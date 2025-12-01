@@ -33,9 +33,9 @@ class StressLogAnalyzer:
         re_target = re.compile(r"^Target: (.+)")
         re_end = re.compile(r"^=== End: (.+) ===")
         # [12:00:01] [Sheet][#1] ACTION
-        re_action = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] \[.+\]\[#\d+\] (.+)")
+        re_action = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[.+\]\[#\d+\] (.+)")
         # [STATUS] 12:00:02 | Mem:145MB
-        re_mem = re.compile(r"^\[STATUS\]\s+(\d{2}:\d{2}:\d{2})\s+\|\s+Mem:(\d+)MB")
+        re_mem = re.compile(r"^\[STATUS\]\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\|\s+Mem:(\d+)MB")
         # [WARN] ...
         re_warn = re.compile(r"^\s+\[WARN\]")
         # !!! [Date] [TYPE] Msg

@@ -116,7 +116,7 @@ class StressCompiler:
             local mem_kb=$(grep VmRSS /proc/$app_pid/status 2>/dev/null | awk '{{print $2}}')
             if [ ! -z "$mem_kb" ]; then
                 local mem_mb=$((mem_kb / 1024))
-                echo "[STATUS] $(date +%H:%M:%S) | Mem:${{mem_mb}}MB" >> $EVENT_LOG
+                echo "[STATUS] $(date "+%Y-%m-%d %H:%M:%S") | Mem:${{mem_mb}}MB" >> $EVENT_LOG
             fi
         fi
 
@@ -167,7 +167,7 @@ class StressCompiler:
                 shell += f"{indent}check_health_fast\n"
 
                 # 2. 记录动作 (去除耗时操作)
-                shell += f'{indent}echo "[$(date "+%H:%M:%S")] [{sheet_name}][#{seq_id}] {action}" >> $EVENT_LOG\n'
+                shell += f'{indent}echo "[$(date "+%Y-%m-%d %H:%M:%S")] [{sheet_name}][#{seq_id}] {action}" >> $EVENT_LOG\n'
 
                 if action == "CLICK":
                     shell += f"{indent}input tap {task.get('p1')} {task.get('p2')}\n"
