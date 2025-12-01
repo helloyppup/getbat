@@ -253,45 +253,61 @@ with tab2:
             if analyzer.parse():
                 d = analyzer.data
 
-                # 关键指标展示
+                # 1. 关键指标展示
                 st.markdown("### 📊 测试概览")
-                c1, c2, c3, c4 = st.columns(4)
+
+                # [新增] 计算网络平均延迟
+                avg_ping = 0
+                valid_pings = [x[1] for x in d['net_records'] if x[1] < 1000]  # 排除超时(1000)
+                if valid_pings:
+                    avg_ping = int(sum(valid_pings) / len(valid_pings))
+
+                c1, c2, c3, c4, c5 = st.columns(5)  # 改为5列
                 c1.metric("总执行动作", f"{d['total_actions']} Steps")
 
                 mem_vals = [m[1] for m in d['mem_records']]
                 max_mem = max(mem_vals) if mem_vals else 0
                 c2.metric("内存峰值", f"{max_mem} MB")
 
-                c3.metric("警告 (Warn)", d['warnings'])
-                c4.metric("严重错误 (Error)", sum(d['errors'].values()), delta_color="inverse")
+                c3.metric("平均 Ping", f"{avg_ping} ms")
+                c4.metric("网络超时", f"{d['net_failures']} 次", delta_color="inverse")
+                c5.metric("严重错误", sum(d['errors'].values()), delta_color="inverse")
 
-                # 图表区域
-                col_chart1, col_chart2 = st.columns([2, 1])
+                # 2. 图表区域
+                st.markdown("#### 📉 趋势分析")
+                tab_chart1, tab_chart2 = st.tabs(["内存趋势", "网络延迟"])
 
-                with col_chart1:
-                    st.markdown("#### 📉 内存趋势图")
+                with tab_chart1:
                     if d['mem_records']:
                         mem_df = pd.DataFrame(d['mem_records'], columns=["Time", "Memory(MB)"])
                         st.line_chart(mem_df.set_index("Time"))
                     else:
                         st.caption("暂无内存数据")
 
-                with col_chart2:
-                    st.markdown("#### 🚫 异常分布")
-                    if d['errors']:
-                        err_df = pd.DataFrame(list(d['errors'].items()), columns=["类型", "次数"])
-                        st.dataframe(err_df, hide_index=True, use_container_width=True)
+                with tab_chart2:
+                    if d['net_records']:
+                        # [新增] 网络图表
+                        net_df = pd.DataFrame(d['net_records'], columns=["Time", "Latency(ms)"])
+                        st.line_chart(net_df.set_index("Time"))
                     else:
-                        st.success("无异常")
+                        st.caption("暂无网络数据 (请确保脚本运行超过 1 分钟)")
 
-                # HTML 报告下载
+                # 3. 异常分布
+                st.markdown("#### 🚫 异常分布")
+                if d['errors']:
+                    err_df = pd.DataFrame(list(d['errors'].items()), columns=["类型", "次数"])
+                    st.dataframe(err_df, hide_index=True, use_container_width=True)
+                else:
+                    st.success("🎉 太棒了！日志中未发现严重错误。")
+
+                # 4. HTML 报告下载
                 report_path = os.path.join(tempfile.gettempdir(), "stress_report.html")
                 analyzer.generate_html(report_path)
                 with open(report_path, "rb") as f:
                     st.download_button(
                         label="📄 下载完整 HTML 报告 (含交互图表)",
                         data=f,
-                        file_name=f"Report_{d['target_pkg']}.html",
+                        file_name=f"Report_{d.get('target_pkg', 'stress')}.html",
                         mime="text/html"
                     )
             else:

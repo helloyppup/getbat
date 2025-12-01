@@ -290,7 +290,7 @@ class StressLogAnalyzer:
                 }}
             }}]
         }};
-        
+        netChart.setOption(netOption);
         pieChart.setOption(pieOption);
     </script>
 </body>
