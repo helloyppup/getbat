@@ -122,9 +122,34 @@ class StressCompiler:
 
         last_heavy_check_time=$now_ts
     }}
+    
+    # --- 网络检查函数 ---
+    function check_network() {{
+        # 60秒检查一次网络 (避免太频繁影响业务)
+        local now_ts=$(date +%s)
+        if [ -z "$last_net_check_time" ]; then last_net_check_time=0; fi
+        
+        if [ $((now_ts - last_net_check_time)) -ge 60 ]; then
+            # Ping 百度，超时2秒，发1个包
+            # 注意：Android 的 ping 输出格式通常包含 time=xx ms
+            local ping_res=$(ping -c 1 -w 2 www.baidu.com 2>&1)
+            
+            if echo "$ping_res" | grep -q "time="; then
+                # 提取延迟 
+                local lat=$(echo "$ping_res" | grep "time=" | awk -F 'time=' '{{print $2}}' | awk '{{print $1}}')
+                # 记录格式: [NETWORK] 2025-12-01 12:00:00 | Ping:34ms
+                echo "[NETWORK] $(date "+%Y-%m-%d %H:%M:%S") | Ping:${{lat}}ms" >> $EVENT_LOG
+            else
+                echo "[NETWORK] $(date "+%Y-%m-%d %H:%M:%S") | Ping:TIMEOUT" >> $EVENT_LOG
+                echo "    [WARN] 网络超时/断开" >> $EVENT_LOG
+            fi
+            
+            last_net_check_time=$now_ts
+        fi
+    }}
 
     function check_health_fast() {{
-        # 1. 进程存活 (pidof 极快)
+        # 进程存活 (pidof 极快)
         if [ -z "$(pidof {self.target_pkg})" ]; then
             echo "!!! [$(date)] [DIED] 进程消失 !!!" >> $EVENT_LOG
             take_snapshot "DIED"
@@ -132,13 +157,18 @@ class StressCompiler:
             sleep 5
             return
         fi
-
-        # 2. 节流执行重型检查 (30秒一次)
+        
+        # 网络检查
+        check_network
+        
+        # 节流执行重型检查 (30秒一次)
         local current_ts=$(date +%s)
         local diff=$((current_ts - last_heavy_check_time))
         if [ $diff -ge 30 ]; then
             perform_heavy_check
         fi
+        
+        
     }}
 
     # --- 主循环 ---

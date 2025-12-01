@@ -18,7 +18,9 @@ class StressLogAnalyzer:
             "errors": defaultdict(int),
             "warnings": 0,
             "snapshots": [],
-            "error_timeline": []  # List of {time, type, msg}
+            "error_timeline": [],  # List of {time, type, msg}
+            "net_records": [], #延迟数值
+            "net_failures": 0,  #超时次数
         }
 
     def parse(self):
@@ -42,6 +44,8 @@ class StressLogAnalyzer:
         re_error = re.compile(r"^!!! \[(.+)\] \[([A-Z_]+)\] (.+)")
         # [SNAPSHOT] Type
         re_snap = re.compile(r"^\s+\[SNAPSHOT\] (.+)")
+        # [NETWORK] 2025-12-01 12:00:00 | Ping:34ms
+        re_net = re.compile(r"^\[NETWORK\]\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\|\s+Ping:(.+)")
 
         with open(self.log_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
@@ -100,6 +104,24 @@ class StressLogAnalyzer:
                 m_snap = re_snap.match(line)
                 if m_snap:
                     self.data["snapshots"].append(m_snap.group(1))
+
+                # 7. 网络记录
+                m_net = re_net.match(line)
+                if m_net:
+                    t_str = m_net.group(1)
+                    val_str = m_net.group(2).strip()
+                    if "TIMEOUT" in val_str or "FAIL" in val_str:
+                        self.data["net_failures"] += 1
+                        # 超时可以在图表上记为 -1 或者 0，或者一个大数值(如1000)方便显示
+                        self.data["net_records"].append((t_str, 1000))
+                    else:
+                        # 去掉 'ms' 并转为 float
+                        try:
+                            latency = float(re.sub(r"[^0-9\.]", "", val_str))
+                            self.data["net_records"].append((t_str, latency))
+                        except:
+                            pass
+                    continue
 
         self._calc_duration()
         return True
@@ -190,6 +212,9 @@ class StressLogAnalyzer:
 
         <h3>📈 内存趋势 (Memory Usage)</h3>
         <div id="memChart" class="chart-box"></div>
+        
+        <h3>📡 网络延迟 (Ping Baidu)</h3>
+        <div id="netChart" class="chart-box"></div>
 
         <h3>🚫 异常分布 (Error Distribution)</h3>
         <div class="summary-grid" style="grid-template-columns: 1fr 1fr;">
@@ -237,6 +262,35 @@ class StressLogAnalyzer:
                 }}
             }}]
         }};
+        
+        // 网络延迟图
+        var netChart = echarts.init(document.getElementById('netChart'));
+        // 准备数据
+        var netTimes = [{",".join([f"'{x[0]}'" for x in d['net_records']])}];
+        var netVals = [{",".join([str(x[1]) for x in d['net_records']])}];
+        
+        var netOption = {{
+            tooltip: {{ trigger: 'axis' }},
+            xAxis: {{ type: 'category', data: netTimes }},
+            yAxis: {{ type: 'value', name: 'ms' }},
+            visualMap: {{
+                show: true,
+                pieces: [
+                    {{gt: 0, lte: 100, color: '#28a745'}},  // 绿色: 好 (0-100ms)
+                    {{gt: 100, lte: 400, color: '#ffc107'}}, // 黄色: 一般 (100-400ms)
+                    {{gt: 400, color: '#dc3545'}}            // 红色: 差/超时
+                ],
+                outOfRange: {{ color: '#999' }}
+            }},
+            series: [{{
+                data: netVals,
+                type: 'line',
+                markLine: {{
+                    data: [ {{ yAxis: 1000, name: 'Timeout' }} ]
+                }}
+            }}]
+        }};
+        
         pieChart.setOption(pieOption);
     </script>
 </body>
