@@ -13,14 +13,16 @@ except ImportError:
 DEFAULT_CONFIG = {
     "target_pkg": "cn.net.cloudthink.smartmirror",
     "duration_sec": 86400 * 3,
-    "start_activity": ".MainActivity"
+    "start_activity": ".MainActivity",
+    "ping_target": "www.baidu.com"
 }
 
 
 class StressCompiler:
-    def __init__(self, target_pkg, duration=3600, start_uri=None):
+    def __init__(self, target_pkg, duration=3600, start_uri=None,ping_target="www.baidu.com"):
         self.target_pkg = target_pkg
         self.duration = int(duration)
+        self.ping_target = ping_target
         if "/" in str(start_uri):
             self.start_uri = start_uri
         else:
@@ -86,7 +88,7 @@ class StressCompiler:
                  echo "--- ANR Logged at $(date) ---" >> $ANR_LOG
                  take_snapshot "ANR"
                  am force-stop {self.target_pkg}
-                 logcat -b events -c 
+                 # logcat -b events -c 
                  sleep 2
                  am start -n {self.start_uri}
                  sleep 5
@@ -132,7 +134,7 @@ class StressCompiler:
         if [ $((now_ts - last_net_check_time)) -ge 60 ]; then
             # Ping 百度，超时2秒，发1个包
             # 注意：Android 的 ping 输出格式通常包含 time=xx ms
-            local ping_res=$(ping -c 1 -w 2 www.baidu.com 2>&1)
+            local ping_res=$(ping -c 1 -w 2 {self.ping_target} 2>&1)
             
             if echo "$ping_res" | grep -q "time="; then
                 # 提取延迟 
@@ -208,7 +210,7 @@ class StressCompiler:
                 elif action == "TEXT":
                     # [优化] 处理空格和单引号转义，防止脚本语法错误
                     raw_txt = str(task.get('p1'))
-                    txt = raw_txt.replace(" ", "%s").replace("'", "'\\''")
+                    txt = raw_txt.replace(" ", "%s").replace("'", "'\\''").replace('"', '\\"')
                     shell += f"{indent}input text '{txt}'\n"
                 elif action == "WAIT":
                     wait_time = task.get('p1') if pd.notna(task.get('p1')) else 1
@@ -219,6 +221,7 @@ class StressCompiler:
                     shell += f"{indent}am start -n {self.start_uri}\n"
                 elif action == "SHELL":
                     shell += f"{indent}{task.get('p1')}\n"
+
 
             shell += f"    done\n"
 
@@ -246,7 +249,8 @@ def load_project_config(excel_path):
             config['target_pkg'] = str(cfg_dict['target_pkg']).strip()
         if 'start_activity' in cfg_dict and pd.notna(cfg_dict['start_activity']):
             config['start_activity'] = str(cfg_dict['start_activity']).strip()
-
+        if 'ping_target' in cfg_dict and pd.notna(cfg_dict['ping_target']):
+            config['ping_target'] = str(cfg_dict['ping_target']).strip()
         # 时长解析逻辑
         if 'duration_value' in cfg_dict and pd.notna(cfg_dict['duration_value']):
             try:
@@ -390,7 +394,8 @@ if __name__ == "__main__":
     compiler = StressCompiler(
         target_pkg=final_config['target_pkg'],
         duration=final_config['duration_sec'],
-        start_uri=final_config['start_activity']
+        start_uri=final_config['start_activity'],
+        ping_target=final_config.get('ping_target', "www.baidu.com")
     )
     shell_code = compiler.compile_sequence(full_execution_plan)
 
