@@ -68,7 +68,8 @@ def generate_template_excel():
             ["start_activity", ".MainActivity"],
             ["duration_value", "3"],
             ["duration_unit", "day (支持 day, hour, min, sec,实际使用的时候不要带其他文字！)"],
-            ["ping_target","www.baidu.com"]
+            ["ping_target","www.baidu.com"],
+            ["log_whitelist", "BlueToothAdapter:D WifiService:D"]
         ], columns=["配置项 (Key)", "配置值 (Value)"])
 
         df_config_plan = pd.DataFrame([

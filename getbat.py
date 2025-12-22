@@ -14,15 +14,17 @@ DEFAULT_CONFIG = {
     "target_pkg": "cn.net.cloudthink.smartmirror",
     "duration_sec": 86400 * 3,
     "start_activity": ".MainActivity",
-    "ping_target": "www.baidu.com"
+    "ping_target": "www.baidu.com",
+    "log_whitelist": ""
 }
 
 
 class StressCompiler:
-    def __init__(self, target_pkg, duration=3600, start_uri=None,ping_target="www.baidu.com"):
+    def __init__(self, target_pkg, duration=3600, start_uri=None,ping_target="www.baidu.com",log_whitelist=""):
         self.target_pkg = target_pkg
         self.duration = int(duration)
         self.ping_target = ping_target
+        self.log_whitelist = log_whitelist
         if "/" in str(start_uri):
             self.start_uri = start_uri
         else:
@@ -61,8 +63,8 @@ class StressCompiler:
     # 环境准备
     svc power stayon true
     logcat -c
-    # 抓取 Crash (Info级别)
-    nohup logcat -v time *:I -f $CRASH_LOG -r 10240 -n 50 &
+    # 抓取 Crash (Info级别+白名单)
+    nohup logcat -v time {self.log_whitelist} *:I -f $CRASH_LOG -r 10240 -n 50 &
     LOGCAT_PID=$!
 
     start_time=$(date +%s)
@@ -127,25 +129,33 @@ class StressCompiler:
     
     # --- 网络检查函数 ---
     function check_network() {{
-        # 60秒检查一次网络 (避免太频繁影响业务)
         local now_ts=$(date +%s)
         if [ -z "$last_net_check_time" ]; then last_net_check_time=0; fi
         
         if [ $((now_ts - last_net_check_time)) -ge 60 ]; then
-            # Ping 百度，超时2秒，发1个包
-            # 注意：Android 的 ping 输出格式通常包含 time=xx ms
-            local ping_res=$(ping -c 1 -w 2 {self.ping_target} 2>&1)
+            # 使用临时文件捕获输出
+            local tmp_ping="$LOG_DIR/ping_output.tmp"
             
-            if echo "$ping_res" | grep -q "time="; then
-                # 提取延迟 
-                local lat=$(echo "$ping_res" | grep "time=" | awk -F 'time=' '{{print $2}}' | awk '{{print $1}}')
-                # 记录格式: [NETWORK] 2025-12-01 12:00:00 | Ping:34ms
+            # 执行 ping，结果直接写入文件 (2>&1 确保错误流也抓进来)
+            ping -c 3 {self.ping_target} > "$tmp_ping" 2>&1
+            
+            # echo "[DEBUG_PING_FILE] Content below:" >> $EVENT_LOG
+            # cat "$tmp_ping" >> $EVENT_LOG
+
+            if grep -q "time=" "$tmp_ping"; then
+                # 提取延迟：直接 grep 文件
+                local lat=$(grep "time=" "$tmp_ping" | head -n 1 | awk -F 'time=' '{{print $2}}' | awk '{{print $1}}')
                 echo "[NETWORK] $(date "+%Y-%m-%d %H:%M:%S") | Ping:${{lat}}ms" >> $EVENT_LOG
             else
+                # 失败分支：读取文件内容作为错误详情
+                local err_msg=$(cat "$tmp_ping")
                 echo "[NETWORK] $(date "+%Y-%m-%d %H:%M:%S") | Ping:TIMEOUT" >> $EVENT_LOG
-                echo "    [WARN] 网络超时/断开" >> $EVENT_LOG
+                # 这里会把 "unknown host" 或者 "Destination Host Unreachable" 等真实原因打印出来
+                echo "    [WARN] 网络异常详情: $err_msg" >> $EVENT_LOG
             fi
             
+            # 清理临时文件
+            rm -f "$tmp_ping"
             last_net_check_time=$now_ts
         fi
     }}
@@ -212,6 +222,28 @@ class StressCompiler:
                     raw_txt = str(task.get('p1'))
                     txt = raw_txt.replace(" ", "%s").replace("'", "'\\''").replace('"', '\\"')
                     shell += f"{indent}input text '{txt}'\n"
+
+                elif action == "ASSERT":
+                    # P1: 期望的关键字 (Keyword)
+                    # P2: 等待时长 (Wait Time)
+                    raw_keyword = str(task.get('p1')).strip()
+                    # 防止关键字里有引号导致脚本报错
+                    keyword = raw_keyword.replace('"', '\\"')
+
+                    wait_s = task.get('p2')
+                    if pd.isna(wait_s) or str(wait_s).strip() == "":
+                        wait_s = 2  # 默认等待2秒再检查
+
+                    shell += f"{indent}sleep {wait_s}\n"
+                    # 在最近 1000 行日志中查找关键字
+                    shell += f'{indent}if logcat -d -t 1000 | grep -q "{keyword}"; then\n'
+                    shell += f'{indent}    echo "[ASSERT_PASS] Found keyword: \'{keyword}\'" >> $EVENT_LOG\n'
+                    shell += f'{indent}else\n'
+                    # 断言失败严重错误
+                    shell += f'{indent}    echo "!!! [$(date)] [ASSERT_FAIL] Expected \'{keyword}\' NOT found!" >> $EVENT_LOG\n'
+                    shell += f'{indent}    take_snapshot "ASSERT_FAIL"\n'
+                    shell += f'{indent}fi\n'
+
                 elif action == "WAIT":
                     wait_time = task.get('p1') if pd.notna(task.get('p1')) else 1
                     shell += f"{indent}sleep {wait_time}\n"
@@ -251,6 +283,8 @@ def load_project_config(excel_path):
             config['start_activity'] = str(cfg_dict['start_activity']).strip()
         if 'ping_target' in cfg_dict and pd.notna(cfg_dict['ping_target']):
             config['ping_target'] = str(cfg_dict['ping_target']).strip()
+        if 'log_whitelist' in cfg_dict and pd.notna(cfg_dict['log_whitelist']):
+            config['log_whitelist'] = str(cfg_dict['log_whitelist']).strip()
         # 时长解析逻辑
         if 'duration_value' in cfg_dict and pd.notna(cfg_dict['duration_value']):
             try:
@@ -395,7 +429,8 @@ if __name__ == "__main__":
         target_pkg=final_config['target_pkg'],
         duration=final_config['duration_sec'],
         start_uri=final_config['start_activity'],
-        ping_target=final_config.get('ping_target', "www.baidu.com")
+        ping_target=final_config.get('ping_target', "www.baidu.com"),
+        log_whitelist=final_config.get('log_whitelist', "")
     )
     shell_code = compiler.compile_sequence(full_execution_plan)
 
@@ -421,7 +456,8 @@ echo ------------------------------------------
 adb shell "pkill -f stress_core.sh"
 adb shell "killall stress_core.sh >/dev/null 2>&1"
 adb shell "rm -f /data/local/tmp/dognoise.lock"
-adb logcat -c && adb shell "rm -rf /sdcard/dognoise_stress/*"
+adb logcat -c
+adb shell "rm -rf /sdcard/dognoise_stress/*"
 echo ------------------------------------------
 
 echo.
