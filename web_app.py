@@ -277,22 +277,44 @@ with tab2:
 
                 # 2. 图表区域
                 st.markdown("#### 📉 趋势分析")
-                tab_chart1, tab_chart2 = st.tabs(["内存趋势", "网络延迟"])
+                tab_mem, tab_net, tab_cpu, tab_temp = st.tabs(["内存", "网络", "CPU", "温度"])
 
-                with tab_chart1:
+                with tab_mem:
                     if d['mem_records']:
                         mem_df = pd.DataFrame(d['mem_records'], columns=["Time", "Memory(MB)"])
                         st.line_chart(mem_df.set_index("Time"))
                     else:
                         st.caption("暂无内存数据")
 
-                with tab_chart2:
+                with tab_net:
                     if d['net_records']:
                         # [新增] 网络图表
                         net_df = pd.DataFrame(d['net_records'], columns=["Time", "Latency(ms)"])
                         st.line_chart(net_df.set_index("Time"))
                     else:
                         st.caption("暂无网络数据 (请确保脚本运行超过 1 分钟)")
+
+                with tab_cpu:
+                    if d.get('cpu_records'):
+                        cpu_df = pd.DataFrame(d['cpu_records'], columns=["Time", "CPU(%)"])
+                        st.line_chart(cpu_df.set_index("Time"))
+                        avg_cpu = sum([x[1] for x in d['cpu_records']]) / len(d['cpu_records'])
+                        st.info(f"平均 CPU 占用: {avg_cpu:.1f}% (注: 多核可能超过100%)")
+                    else:
+                        st.caption("暂无 CPU 数据")
+
+
+                with tab_temp:
+                    if d.get('temp_records'):
+                        temp_df = pd.DataFrame(d['temp_records'], columns=["Time", "Temp(°C)"])
+                        st.line_chart(temp_df.set_index("Time"))
+                        max_temp = max([x[1] for x in d['temp_records']])
+                        if max_temp > 80:
+                            st.error(f"🔥 历史最高温: {max_temp}°C")
+                        else:
+                            st.success(f"🌡️ 历史最高温: {max_temp}°C (散热良好)")
+                    else:
+                        st.caption("暂无温度数据")
 
                 # 3. 异常分布
                 st.markdown("#### 🚫 异常分布")

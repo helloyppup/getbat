@@ -14,13 +14,15 @@ class StressLogAnalyzer:
             "duration": "N/A",
             "target_pkg": "Unknown",
             "total_actions": 0,
-            "mem_records": [],  # List of (time_str, mem_val)
+            "mem_records": [],
+            "cpu_records": [],
+            "temp_records": [],
+            "net_records": [],
+            "net_failures": 0,
             "errors": defaultdict(int),
             "warnings": 0,
             "snapshots": [],
-            "error_timeline": [],  # List of {time, type, msg}
-            "net_records": [], #延迟数值
-            "net_failures": 0,  #超时次数
+            "error_timeline": [],
         }
 
     def parse(self):
@@ -30,111 +32,141 @@ class StressLogAnalyzer:
 
         print(f"正在分析日志: {self.log_path} ...")
 
-        # 正则表达式预编译
-        re_start = re.compile(r"^=== Long-Term Stress Test Start: (.+) ===")
-        re_target = re.compile(r"^Target: (.+)")
-        re_end = re.compile(r"^=== End: (.+) ===")
-        # [12:00:01] [Sheet][#1] ACTION
-        re_action = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[.+\]\[#\d+\] (.+)")
-        # [STATUS] 12:00:02 | Mem:145MB
-        re_mem = re.compile(r"^\[STATUS\]\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\|\s+Mem:(\d+)MB")
-        # [WARN] ...
-        re_warn = re.compile(r"^\s+\[WARN\]")
-        # !!! [Date] [TYPE] Msg
-        re_error = re.compile(r"^!!! \[(.+)\] \[([A-Z_]+)\] (.+)")
-        # [SNAPSHOT] Type
-        re_snap = re.compile(r"^\s+\[SNAPSHOT\] (.+)")
-        # [NETWORK] 2025-12-01 12:00:00 | Ping:34ms
-        re_net = re.compile(r"^\[NETWORK\]\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\|\s+Ping:(.+)")
+        # =========================================================
+        # 1. 定义正则 (清理了重复定义，只保留核心)
+        # =========================================================
+
+        # 主正则: 提取开头的标准时间 [2025-12-24 10:00:00]
+        re_master = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+(.+)")
+
+        # 子正则: 用于匹配具体内容 (Content)
+        re_status = re.compile(r"\[STATUS\]\s+Mem:(?P<mem>\d+)MB(?:.*CPU:(?P<cpu>[\d\.]+)%)?(?:.*Temp:(?P<temp>\d+)C)?")
+        re_net = re.compile(r"\[NETWORK\]\s+(?:\|\s+)?Ping:(?P<val>.+)")  # 兼容有没有 | 的情况
+        re_action = re.compile(r"\[.+?\]\[#\d+\]\s+(.+)")
+        re_target_start = re.compile(r"=== 压测开始: 目标 (.+) ===")
+
+        re_header_target = re.compile(r"(?:Target:|目标)\s+([a-zA-Z0-9\._]+)")
+        re_header_start = re.compile(r"Log-Term Stress Test Start:\s+(.+)")
 
         with open(self.log_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 line = line.strip()
                 if not line: continue
 
-                # 1. 基础信息
-                m_start = re_start.match(line)
-                if m_start:
-                    self.data["start_time"] = m_start.group(1)
+
+
+                # --- 第一步：主正则拆解 ---
+                m_master = re_master.match(line)
+
+                # 如果这行连时间头都没有（比如Crash堆栈），直接跳过
+                if m_master:
+                    # >>> 场景 A: 标准日志行 (有时间戳) <<<
+                    time_str = m_master.group(1)
+                    content = m_master.group(2)
+
+                    # 顺便更新一下开始时间
+                    if self.data["start_time"] is None:
+                        self.data["start_time"] = time_str
+                else:
+                    # >>> 场景 B: 可能是 Header (无时间戳) <<<
+                    # 比如: "Target: com.example.app"
+                    content = line
+                    time_str = self.data["start_time"] or "Unknown"
+
+                time_str = m_master.group(1)
+                content = m_master.group(2)  # 去掉时间后的纯内容
+
+                # --- 第二步：分类解析 ---
+
+                if "Target:" in content or "目标" in content:
+                    m_t = re_header_target.search(content)
+                    if m_t:
+                        self.data["target_pkg"] = m_t.group(1)
+                        # 如果还没找到开始时间，但这行有时间戳，就用这行的时间
+                        if self.data["start_time"] is None and m_master:
+                            self.data["start_time"] = time_str
+
+                # 1. 状态监控 (STATUS)
+                if "[STATUS]" in content:
+                    m = re_status.search(content)
+                    if m:
+                        # 内存
+                        self.data["mem_records"].append((time_str, int(m.group("mem"))))
+                        # CPU
+                        if m.group("cpu"):
+                            try:
+                                self.data["cpu_records"].append((time_str, float(m.group("cpu"))))
+                            except:
+                                pass
+                        # 温度
+                        if m.group("temp"):
+                            try:
+                                self.data["temp_records"].append((time_str, int(m.group("temp"))))
+                            except:
+                                pass
                     continue
 
-                m_target = re_target.match(line)
-                if m_target:
-                    self.data["target_pkg"] = m_target.group(1)
+                # 2. 网络监控 (NETWORK)
+                if "[NETWORK]" in content:
+                    m = re_net.search(content)
+                    if m:
+                        val_str = m.group("val").strip()
+                        if "TIMEOUT" in val_str or "FAIL" in val_str:
+                            self.data["net_failures"] += 1
+                            self.data["net_records"].append((time_str, 1000))
+                        else:
+                            try:
+                                latency = float(re.sub(r"[^0-9\.]", "", val_str))
+                                self.data["net_records"].append((time_str, latency))
+                            except:
+                                pass
                     continue
 
-                m_end = re_end.match(line)
-                if m_end:
-                    self.data["end_time"] = m_end.group(1)
+                # 3. 动作记录 (包含 [#数字])
+                if "[#" in content:
+                    m = re_action.search(content)
+                    if m:
+                        self.data["total_actions"] += 1
                     continue
 
-                # 2. 内存记录
-                m_mem = re_mem.match(line)
-                if m_mem:
-                    t_str = m_mem.group(1)
-                    mem_val = int(m_mem.group(2))
-                    self.data["mem_records"].append((t_str, mem_val))
-                    continue
+                # 4. 严重错误 (CRITICAL)
+                if "CRITICAL_" in content:
+                    err_type = "SYSTEM_ERROR"
+                    if "OOM" in content:
+                        err_type = "OOM"
+                    elif "MEDIA" in content:
+                        err_type = "MEDIA"
+                    elif "AUDIO" in content:
+                        err_type = "AUDIO"
+                    elif "KERNEL" in content:
+                        err_type = "KERNEL"
 
-                # 3. 动作计数
-                if re_action.match(line):
-                    self.data["total_actions"] += 1
-                    continue
-
-                # 4. 警告
-                if re_warn.match(line):
-                    self.data["warnings"] += 1
-                    continue
-
-                # 5. 严重错误 (Critical)
-                m_err = re_error.match(line)
-                if m_err:
-                    err_time = m_err.group(1)
-                    err_type = m_err.group(2)
-                    err_msg = m_err.group(3)
                     self.data["errors"][err_type] += 1
                     self.data["error_timeline"].append({
-                        "time": err_time,
+                        "time": time_str,
                         "type": err_type,
-                        "msg": err_msg
+                        "msg": content
                     })
                     continue
 
-                # 6. 截图记录
-                m_snap = re_snap.match(line)
-                if m_snap:
-                    self.data["snapshots"].append(m_snap.group(1))
-
-                # 7. 网络记录
-                m_net = re_net.match(line)
-                if m_net:
-                    t_str = m_net.group(1)
-                    val_str = m_net.group(2).strip()
-                    if "TIMEOUT" in val_str or "FAIL" in val_str:
-                        self.data["net_failures"] += 1
-                        # 超时可以在图表上记为 -1 或者 0，或者一个大数值(如1000)方便显示
-                        self.data["net_records"].append((t_str, 1000))
-                    else:
-                        # 去掉 'ms' 并转为 float
-                        try:
-                            latency = float(re.sub(r"[^0-9\.]", "", val_str))
-                            self.data["net_records"].append((t_str, latency))
-                        except:
-                            pass
-                    continue
+                # 5. 其他信息
+                if "[WARN]" in content:
+                    self.data["warnings"] += 1
+                elif "[SNAPSHOT]" in content:
+                    snap_name = content.split(" ")[-1]
+                    self.data["snapshots"].append(snap_name)
+                elif "=== 压测开始" in content:
+                    m = re_target_start.search(content)
+                    if m:
+                        self.data["target_pkg"] = m.group(1)
+                        self.data["start_time"] = time_str
 
         self._calc_duration()
         return True
 
     def _calc_duration(self):
-        # 简单计算时长，仅作为参考
-        if self.data["start_time"] and self.data["end_time"]:
-            try:
-                # 尝试解析 date 格式 Mon Dec 1 ...
-                # 这里简化处理，直接用字符串显示
-                self.data["duration"] = "Calculated in Report"
-            except:
-                pass
+        # 简单计算时长
+        pass
 
     def print_summary(self):
         d = self.data
@@ -142,8 +174,6 @@ class StressLogAnalyzer:
         print("📊 [Dognoise] 压测报告摘要")
         print("=" * 40)
         print(f"目标应用 : {d['target_pkg']}")
-        print(f"开始时间 : {d['start_time']}")
-        print(f"结束时间 : {d['end_time']}")
         print(f"执行动作 : {d['total_actions']} Steps")
         print("-" * 40)
 
@@ -156,9 +186,17 @@ class StressLogAnalyzer:
         else:
             print("内存数据 : 无记录")
 
+        if d['cpu_records']:
+            avg_cpu = sum([x[1] for x in d['cpu_records']]) / len(d['cpu_records'])
+            print(f"CPU 均值  : {avg_cpu:.1f}%")
+
+        if d['temp_records']:
+            max_temp = max([x[1] for x in d['temp_records']])
+            print(f"最高温度  : {max_temp}°C")
+
         print("-" * 40)
-        print(f"⚠️ 警告 (Warn)  : {d['warnings']}")
-        print(f"❌ 错误 (Error) : {sum(d['errors'].values())}")
+        print(f"警告 (Warn)  : {d['warnings']}")
+        print(f"错误 (Error) : {sum(d['errors'].values())}")
 
         if d['errors']:
             for k, v in d['errors'].items():
@@ -174,8 +212,14 @@ class StressLogAnalyzer:
         times = [f"'{x[0]}'" for x in d['mem_records']]
         mems = [str(x[1]) for x in d['mem_records']]
 
-        err_labels = list(d['errors'].keys())
-        err_values = list(d['errors'].values())
+        cpu_times = [f"'{x[0]}'" for x in d['cpu_records']]
+        cpu_vals = [str(x[1]) for x in d['cpu_records']]
+
+        temp_times = [f"'{x[0]}'" for x in d['temp_records']]
+        temp_vals = [str(x[1]) for x in d['temp_records']]
+
+        net_times = [f"'{x[0]}'" for x in d['net_records']]
+        net_vals = [str(x[1]) for x in d['net_records']]
 
         html_content = f"""
 <!DOCTYPE html>
@@ -186,112 +230,87 @@ class StressLogAnalyzer:
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <style>
         body {{ font-family: 'Segoe UI', sans-serif; background: #f4f6f9; margin: 0; padding: 20px; }}
-        .container {{ max-width: 1000px; margin: 0 auto; background: #fff; padding: 30px; box-shadow: 0 0 15px rgba(0,0,0,0.1); border-radius: 8px; }}
-        h1 {{ color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }}
-        .summary-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }}
-        .card {{ background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid #e9ecef; }}
-        .card h3 {{ margin: 0; color: #6c757d; font-size: 14px; }}
-        .card p {{ margin: 10px 0 0; font-size: 24px; font-weight: bold; color: #333; }}
-        .card.danger p {{ color: #dc3545; }}
-        .chart-box {{ height: 400px; margin-bottom: 40px; }}
-        .error-list {{ background: #fff3cd; padding: 15px; border-radius: 5px; border: 1px solid #ffeeba; }}
-        .error-item {{ border-bottom: 1px solid #fae39d; padding: 8px 0; color: #856404; }}
+        .container {{ max-width: 1200px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }}
+        h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 15px; }}
+        h3 {{ color: #34495e; margin-top: 30px; border-left: 4px solid #3498db; padding-left: 10px; }}
+        .card-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }}
+        .card {{ background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; border: 1px solid #e9ecef; }}
+        .card h4 {{ margin: 0; color: #7f8c8d; font-size: 14px; text-transform: uppercase; }}
+        .card p {{ margin: 10px 0 0; font-size: 28px; font-weight: bold; color: #2c3e50; }}
+        .chart-box {{ height: 400px; width: 100%; margin-bottom: 20px; }}
+        .danger {{ color: #e74c3c !important; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Dognoise 压测报告</h1>
+        <h1>🐕 Dognoise 压测报告</h1>
         <p>Target: <strong>{d['target_pkg']}</strong> | Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
 
-        <div class="summary-grid">
-            <div class="card"><h3>Total Actions</h3><p>{d['total_actions']}</p></div>
-            <div class="card"><h3>Peak Memory</h3><p>{max([m[1] for m in d['mem_records']]) if d['mem_records'] else 0} MB</p></div>
-            <div class="card"><h3>Warnings</h3><p style="color:#ffc107">{d['warnings']}</p></div>
-            <div class="card danger"><h3>Total Errors</h3><p>{sum(d['errors'].values())}</p></div>
+        <div class="card-grid">
+            <div class="card"><h4>执行动作 (Steps)</h4><p>{d['total_actions']}</p></div>
+            <div class="card"><h4>内存峰值 (MB)</h4><p>{max([m[1] for m in d['mem_records']]) if d['mem_records'] else 0}</p></div>
+            <div class="card"><h4>网络超时 (次)</h4><p class="{'danger' if d['net_failures'] > 0 else ''}">{d['net_failures']}</p></div>
+            <div class="card"><h4>严重错误 (个)</h4><p class="{'danger' if sum(d['errors'].values()) > 0 else ''}">{sum(d['errors'].values())}</p></div>
         </div>
 
-        <h3>📈 内存趋势 (Memory Usage)</h3>
-        <div id="memChart" class="chart-box"></div>
-        
-        <h3>📡 网络延迟 (Ping Baidu)</h3>
+        <h3>📈 全能监控趋势 (CPU / Temp / Mem)</h3>
+        <div id="comboChart" class="chart-box"></div>
+
+        <h3>📡 网络延迟 (Ping)</h3>
         <div id="netChart" class="chart-box"></div>
 
-        <h3>🚫 异常分布 (Error Distribution)</h3>
-        <div class="summary-grid" style="grid-template-columns: 1fr 1fr;">
-            <div id="pieChart" style="height: 300px;"></div>
-            <div class="error-list">
-                <strong>最近异常记录 (Top 10):</strong>
-                {"".join([f'<div class="error-item">[{e["time"]}] <strong>{e["type"]}</strong>: {e["msg"]}</div>' for e in d["error_timeline"][-10:]])}
-            </div>
-        </div>
+        <h3>🚫 异常统计</h3>
+        <div id="pieChart" style="height: 350px;"></div>
+
     </div>
 
     <script type="text/javascript">
-        // 内存曲线
-        var memChart = echarts.init(document.getElementById('memChart'));
-        var memOption = {{
-            tooltip: {{ trigger: 'axis' }},
-            xAxis: {{ type: 'category', data: [{",".join(times)}] }},
-            yAxis: {{ type: 'value', name: 'MB', scale: true }},
-            series: [{{
-                data: [{",".join(mems)}],
-                type: 'line',
-                smooth: true,
-                areaStyle: {{ opacity: 0.2 }},
-                itemStyle: {{ color: '#007bff' }},
-                markPoint: {{
-                    data: [ {{ type: 'max', name: 'Max' }}, {{ type: 'min', name: 'Min' }} ]
-                }}
-            }}]
+        var comboChart = echarts.init(document.getElementById('comboChart'));
+        var comboOption = {{
+            tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }} }},
+            legend: {{ data: ['Memory (MB)', 'CPU (%)', 'Temp (°C)'] }},
+            grid: {{ right: '20%' }},
+            xAxis: [{{ type: 'category', data: [{",".join(times)}] }}],
+            yAxis: [
+                {{ type: 'value', name: 'Memory', position: 'left', axisLine: {{ show: true, lineStyle: {{ color: '#5470C6' }} }} }},
+                {{ type: 'value', name: 'CPU', position: 'right', axisLine: {{ show: true, lineStyle: {{ color: '#91CC75' }} }} }},
+                {{ type: 'value', name: 'Temp', position: 'right', offset: 80, axisLine: {{ show: true, lineStyle: {{ color: '#EE6666' }} }} }}
+            ],
+            series: [
+                {{ name: 'Memory (MB)', type: 'line', yAxisIndex: 0, data: [{",".join(mems)}], smooth: true, areaStyle: {{ opacity: 0.1 }} }},
+                {{ name: 'CPU (%)', type: 'line', yAxisIndex: 1, data: [{",".join(cpu_vals)}], smooth: true }},
+                {{ name: 'Temp (°C)', type: 'line', yAxisIndex: 2, data: [{",".join(temp_vals)}], smooth: true, itemStyle: {{ color: '#EE6666' }} }}
+            ]
         }};
-        memChart.setOption(memOption);
+        comboChart.setOption(comboOption);
 
-        // 饼图
+        var netChart = echarts.init(document.getElementById('netChart'));
+        var netOption = {{
+            tooltip: {{ trigger: 'axis' }},
+            xAxis: {{ type: 'category', data: [{",".join(net_times)}] }},
+            yAxis: {{ type: 'value', name: 'ms' }},
+            visualMap: {{
+                show: false,
+                pieces: [ {{gt: 0, lte: 200, color: '#2ecc71'}}, {{gt: 200, color: '#e74c3c'}} ]
+            }},
+            series: [{{ type: 'line', data: [{",".join(net_vals)}], markLine: {{ data: [ {{ yAxis: 1000, name: 'Timeout' }} ] }} }}]
+        }};
+        netChart.setOption(netOption);
+
         var pieChart = echarts.init(document.getElementById('pieChart'));
         var pieOption = {{
             tooltip: {{ trigger: 'item' }},
             series: [{{
-                name: 'Error Type',
                 type: 'pie',
-                radius: ['40%', '70%'],
+                radius: '60%',
                 data: [
                     {",".join([f"{{value: {v}, name: '{k}'}}" for k, v in d['errors'].items()])}
-                ],
-                emphasis: {{
-                    itemStyle: {{ shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' }}
-                }}
+                ]
             }}]
         }};
-        
-        // 网络延迟图
-        var netChart = echarts.init(document.getElementById('netChart'));
-        // 准备数据
-        var netTimes = [{",".join([f"'{x[0]}'" for x in d['net_records']])}];
-        var netVals = [{",".join([str(x[1]) for x in d['net_records']])}];
-        
-        var netOption = {{
-            tooltip: {{ trigger: 'axis' }},
-            xAxis: {{ type: 'category', data: netTimes }},
-            yAxis: {{ type: 'value', name: 'ms' }},
-            visualMap: {{
-                show: true,
-                pieces: [
-                    {{gt: 0, lte: 100, color: '#28a745'}},  // 绿色: 好 (0-100ms)
-                    {{gt: 100, lte: 400, color: '#ffc107'}}, // 黄色: 一般 (100-400ms)
-                    {{gt: 400, color: '#dc3545'}}            // 红色: 差/超时
-                ],
-                outOfRange: {{ color: '#999' }}
-            }},
-            series: [{{
-                data: netVals,
-                type: 'line',
-                markLine: {{
-                    data: [ {{ yAxis: 1000, name: 'Timeout' }} ]
-                }}
-            }}]
-        }};
-        netChart.setOption(netOption);
         pieChart.setOption(pieOption);
+
+        window.onresize = function() {{ comboChart.resize(); netChart.resize(); pieChart.resize(); }};
     </script>
 </body>
 </html>
@@ -299,22 +318,16 @@ class StressLogAnalyzer:
 
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(html_content)
-        print(f"\n✅ HTML 报告已生成: {os.path.abspath(output_file)}")
+        print(f"✅ HTML 报告已生成: {output_file}")
 
 
 if __name__ == "__main__":
-    # 默认读取当前目录下的 dist_stress/event.log，或者是同级目录的 event.log
-    possible_paths = [
-        os.path.join("dist_stress", "event.log"),
-        "event.log"
-    ]
-
+    possible_paths = [os.path.join("dist_stress", "event.log"), "event.log"]
     log_file = None
     for p in possible_paths:
         if os.path.exists(p):
             log_file = p
             break
-
     if len(sys.argv) > 1:
         log_file = sys.argv[1]
 
