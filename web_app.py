@@ -159,10 +159,22 @@ with tab1:
                 else:
                     # 显示配置摘要
                     with st.expander("✅ 解析成功！点击查看详细配置", expanded=True):
-                        st.write(f"**目标包名**: `{final_config['target_pkg']}`")
-                        st.write(f"**测试时长**: `{final_config['duration_sec']} 秒`")
+                        # 1. 顶部高亮显示关键信息
+                        c_info1, c_info2 = st.columns(2)
+                        c_info1.info(f"**目标包名**: `{final_config.get('target_pkg', 'N/A')}`")
+                        c_info2.info(f"**测试时长**: `{final_config.get('duration_sec', 0)}` 秒")
 
-                        # 解析详细步骤用于预览
+                        # 2. 展示完整 Config 表格
+                        st.markdown("#### 📋 完整配置参数")
+                        # 将字典转换为 DataFrame 用于展示
+                        # 过滤掉一些可能不想展示的内部字段，或者直接全展示
+                        config_items = [{"配置项": k, "配置值": str(v)} for k, v in final_config.items()]
+                        st.dataframe(pd.DataFrame(config_items), use_container_width=True, hide_index=True)
+
+                        st.markdown("---")
+
+                        # 3. 解析详细步骤用于预览 (原有的逻辑保持不变)
+                        st.markdown("#### 🔄 执行步骤预览")
                         preview_list = []
                         full_execution_plan = []
                         global_seq = 0
@@ -186,7 +198,10 @@ with tab1:
                         compiler = StressCompiler(
                             target_pkg=final_config['target_pkg'],
                             duration=final_config['duration_sec'],
-                            start_uri=final_config['start_activity']
+                            start_uri=final_config['start_activity'],
+                            ping_target=final_config.get('ping_target', "www.baidu.com"),
+                            log_whitelist=final_config.get('log_whitelist', ""),
+                            device_name=final_config.get('device_name', "")
                         )
                         shell_code = compiler.compile_sequence(full_execution_plan)
 

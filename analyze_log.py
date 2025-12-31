@@ -27,7 +27,7 @@ class StressLogAnalyzer:
 
     def parse(self):
         if not os.path.exists(self.log_path):
-            print(f"❌ 错误: 找不到日志文件 {self.log_path}")
+            print(f"错误: 找不到日志文件 {self.log_path}")
             return False
 
         print(f"正在分析日志: {self.log_path} ...")
@@ -41,7 +41,7 @@ class StressLogAnalyzer:
 
         # 子正则: 用于匹配具体内容 (Content)
         re_status = re.compile(r"\[STATUS\]\s+Mem:(?P<mem>\d+)MB(?:.*CPU:(?P<cpu>[\d\.]+)%)?(?:.*Temp:(?P<temp>\d+)C)?")
-        re_net = re.compile(r"\[NETWORK\]\s+(?:\|\s+)?Ping:(?P<val>.+)")  # 兼容有没有 | 的情况
+        re_net = re.compile(r"\[NETWORK\].*?Ping:(?P<val>.+)")
         re_action = re.compile(r"\[.+?\]\[#\d+\]\s+(.+)")
         re_target_start = re.compile(r"=== 压测开始: 目标 (.+) ===")
 
@@ -58,23 +58,20 @@ class StressLogAnalyzer:
                 # --- 第一步：主正则拆解 ---
                 m_master = re_master.match(line)
 
-                # 如果这行连时间头都没有（比如Crash堆栈），直接跳过
-                if m_master:
-                    # >>> 场景 A: 标准日志行 (有时间戳) <<<
-                    time_str = m_master.group(1)
-                    content = m_master.group(2)
+                if not m_master: continue
 
-                    # 顺便更新一下开始时间
-                    if self.data["start_time"] is None:
-                        self.data["start_time"] = time_str
-                else:
-                    # >>> 场景 B: 可能是 Header (无时间戳) <<<
-                    # 比如: "Target: com.example.app"
-                    content = line
-                    time_str = self.data["start_time"] or "Unknown"
+                # 如果这行连时间头都没有（比如Crash堆栈），直接跳过
 
                 time_str = m_master.group(1)
-                content = m_master.group(2)  # 去掉时间后的纯内容
+                content = m_master.group(2)
+
+                if self.data["start_time"] is None:
+                    self.data["start_time"] = time_str
+                self.data["end_time"] = time_str
+
+
+                # time_str = m_master.group(1)
+                # content = m_master.group(2)  # 去掉时间后的纯内容
 
                 # --- 第二步：分类解析 ---
 
@@ -165,8 +162,54 @@ class StressLogAnalyzer:
         return True
 
     def _calc_duration(self):
-        # 简单计算时长
-        pass
+        """
+        根据日志的首尾时间，计算压测持续时长
+        """
+        start_dt = None
+        end_dt = None
+        fmt = "%Y-%m-%d %H:%M:%S"
+
+        # 1. 确定开始时间 (优先用解析到的 start_time，没有则用第一条数据的时间)
+        t_str_start = self.data.get("start_time")
+        if not t_str_start and self.data["mem_records"]:
+            t_str_start = self.data["mem_records"][0][0]  # 取第一条记录的时间
+
+        if t_str_start:
+            try:
+                start_dt = datetime.datetime.strptime(t_str_start, fmt)
+                # 回填一下 start_time，防止是 None
+                self.data["start_time"] = t_str_start
+            except:
+                pass
+
+        # 2. 确定结束时间 (优先用解析到的 end_time，没有则用最后一条数据的时间)
+        t_str_end = self.data.get("end_time")
+        if not t_str_end and self.data["mem_records"]:
+            t_str_end = self.data["mem_records"][-1][0]  # 取最后一条记录的时间
+
+        if t_str_end:
+            try:
+                end_dt = datetime.datetime.strptime(t_str_end, fmt)
+                self.data["end_time"] = t_str_end
+            except:
+                pass
+
+        # 3. 计算差值
+        if start_dt and end_dt:
+            delta = end_dt - start_dt
+            total_seconds = int(delta.total_seconds())
+
+            # 防止时间倒流（比如日志文件拼接顺序错了）
+            if total_seconds < 0:
+                total_seconds = 0
+
+            h = total_seconds // 3600
+            m = (total_seconds % 3600) // 60
+            s = total_seconds % 60
+
+            self.data["duration"] = f"{h}h {m}m {s}s"
+        else:
+            self.data["duration"] = "N/A (时间不足)"
 
     def print_summary(self):
         d = self.data
