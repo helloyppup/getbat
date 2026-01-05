@@ -177,12 +177,14 @@ with tab1:
                         st.markdown("#### 🔄 执行步骤预览")
                         preview_list = []
                         full_execution_plan = []
-                        global_seq = 0
 
+                        # 移除 global_seq 逻辑，因为 getbat.py 不需要它
                         for stage in seq_plan:
                             s_name = stage['name']
-                            tasks, new_seq = parse_tasks_from_sheet(tmp_excel_path, s_name, global_seq)
-                            global_seq = new_seq
+
+                            # 【修正点】只传 2 个参数，只接收 1 个返回值
+                            tasks = parse_tasks_from_sheet(tmp_excel_path, s_name)
+
                             if tasks:
                                 full_execution_plan.append({"name": s_name, "loop": stage['loop'], "tasks": tasks})
                                 preview_list.append({
@@ -190,19 +192,18 @@ with tab1:
                                     "循环次数": stage['loop'],
                                     "动作数量": len(tasks)
                                 })
+                            else:
+                                # 可选：如果某个 Sheet 没解析出任务，给个提示
+                                st.warning(f"⚠️ Sheet [{s_name}] 为空或格式不正确，已跳过")
 
-                        st.table(pd.DataFrame(preview_list))
+                        if preview_list:
+                            st.table(pd.DataFrame(preview_list))
+                        else:
+                            st.error("❌ 未解析出任何有效任务，请检查 Excel 内容。")
 
                     # 编译按钮
                     if st.button("🚀 立即编译并打包下载"):
-                        compiler = StressCompiler(
-                            target_pkg=final_config['target_pkg'],
-                            duration=final_config['duration_sec'],
-                            start_uri=final_config['start_activity'],
-                            ping_target=final_config.get('ping_target', "www.baidu.com"),
-                            log_whitelist=final_config.get('log_whitelist', ""),
-                            device_name=final_config.get('device_name', "")
-                        )
+                        compiler = StressCompiler(final_config)
                         shell_code = compiler.compile_sequence(full_execution_plan)
 
                         # 生成 BAT 内容
